@@ -52,7 +52,7 @@ class RecommenderService:
         train_df = pd.read_parquet(train_path)
         meta_df = pd.read_parquet(metadata_path)
 
-        rec = ShopSenseRecommender(min_cf_interactions=min_cf_interactions)
+        rec = ShopSenseRecommender(min_cf_interactions=min_cf_interactions, api_mode=True,)
         rec.fit(train_df=train_df, metadata_df=meta_df)
 
         self.recommender = rec
@@ -180,10 +180,33 @@ class RecommenderService:
                 return scores_list
 
             elif strategy == "cold_user_popularity_prior":
-                # Normalized Bayesian popularity score in [0, 1]
-                pop_scores = self.recommender.hybrid_model.pop_scores_norm
+                # Normalized popularity score in API mode.
+                pop_model = self.recommender.popularity_model
+
+                if pop_model is None or not pop_model.is_fitted:
+                    return [None] * len(asin_list)
+
+                pop_df = pop_model.item_stats_df
+
+                if pop_df is None or pop_df.empty:
+                    return [None] * len(asin_list)
+
+                pop_scores = dict(
+                    zip(
+                        pop_df["parent_asin"],
+                        pop_df["popularity_score"],
+                    )
+                )
+
+                if not pop_scores:
+                    return [None] * len(asin_list)
+
+                max_score = max(pop_scores.values())
+                min_score = min(pop_scores.values())
+                denom = max_score - min_score if max_score > min_score else 1.0
+
                 return [
-                    float(pop_scores.get(asin))
+                    float((pop_scores[asin] - min_score) / denom)
                     if asin in pop_scores
                     else None
                     for asin in asin_list

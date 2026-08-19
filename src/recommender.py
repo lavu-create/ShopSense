@@ -59,11 +59,13 @@ class ShopSenseRecommender:
         w_pop: float = 0.50,
         w_user: float = 0.40,
         w_item: float = 0.10,
+        api_mode: bool = False,
     ):
         self.min_cf_interactions = min_cf_interactions
         self.w_pop = w_pop
         self.w_user = w_user
         self.w_item = w_item
+        self.api_mode = api_mode
 
         self.popularity_model = PopularityRecommender()
         self.user_cf_model = UserBasedCF(n_neighbors=50, fallback_model=self.popularity_model)
@@ -90,11 +92,25 @@ class ShopSenseRecommender:
         start_time = time.time()
         print("\n🚀 Fitting ShopSenseRecommender Unified Multi-Tier System...")
 
-        # 1. Fit Hybrid CF engine
-        self.hybrid_model.fit(train_df)
-        self.item_cf_model = self.hybrid_model.item_model
-        self.user_cf_model = self.hybrid_model.user_model
-        self.popularity_model = self.hybrid_model.pop_model
+        # 1. Fit models
+        if self.api_mode:
+            # Lightweight mode for Render / API deployment.
+            # Avoid User-CF and Item-CF because they require too much RAM.
+            self.popularity_model = PopularityRecommender(m_threshold=5)
+            self.popularity_model.fit(train_df)
+
+            # Keep a lightweight hybrid-like reference for popularity scores.
+            self.hybrid_model = None
+            self.user_cf_model = None
+            self.item_cf_model = None
+
+            print("  ✓ API mode: skipped User-CF, Item-CF and Hybrid models")
+        else:
+            # Full model for local training/evaluation.
+            self.hybrid_model.fit(train_df)
+            self.item_cf_model = self.hybrid_model.item_model
+            self.user_cf_model = self.hybrid_model.user_model
+            self.popularity_model = self.hybrid_model.pop_model
 
         # 2. Fit Content-Based metadata engine
         active_items = set(train_df["parent_asin"].unique()) | set(metadata_df["parent_asin"].unique())
@@ -143,6 +159,23 @@ class ShopSenseRecommender:
             hist_count = 0
             effective_history = []
             effective_ratings = []
+
+        # API mode: use lightweight content/popularity routing only.
+        if self.api_mode:
+            if hist_count > 0 and len(effective_history) > 0:
+                recs = self.content_model.recommend_for_user_history(
+                    user_history=effective_history,
+                    user_ratings=effective_ratings,
+                    k=k,
+                    exclude_seen=exclude_seen,
+                )
+                return recs, "content_based_sparse_history"
+
+            recs = self.content_model.recommend_for_cold_user(
+                category_preference=category_preference,
+                k=k,
+            )
+            return recs, "cold_user_popularity_prior"
 
         # ROUTE 1: Known warm user with sufficient collaborative history (>= 10 interactions)
         if user_id is not None and hist_count >= self.min_cf_interactions and user_id in self.hybrid_model.user_model.matrix.user_to_idx:
