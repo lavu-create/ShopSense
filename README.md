@@ -8,8 +8,6 @@ ShopSense is an end-to-end e-commerce recommendation system and inference API bu
 
 **Live API:** [https://shopsense-lcrd.onrender.com](https://shopsense-lcrd.onrender.com)
 
-**GitHub:** [https://github.com/lavu-create/ShopSense](https://github.com/lavu-create/ShopSense)
-
 ### Currently Verified API Endpoints
 
 - **`GET /health`**
