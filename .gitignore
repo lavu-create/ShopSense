@@ -5,6 +5,14 @@ data/processed/
 *.jsonl
 *.parquet
 *.csv
+
+# Deployment data — required by FastAPI
+!data/processed/
+!data/processed/train.parquet
+!data/processed/metadata_clean.parquet
+
+# Sample data
+!data/samples/
 !data/samples/*.csv
 
 # === Python ===
