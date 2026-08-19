@@ -78,7 +78,7 @@ class ShopSenseRecommender:
             user_model=self.user_cf_model,
             item_model=self.item_cf_model,
         )
-        self.content_model = ContentBasedRecommender()
+        self.content_model = ContentBasedRecommender(api_mode=self.api_mode)
 
         self.user_interaction_counts: Dict[str, int] = {}
         self.user_train_history: Dict[str, List[str]] = {}
@@ -207,7 +207,7 @@ class ShopSenseRecommender:
         if not self.is_fitted:
             raise RuntimeError("Model must be fitted.")
 
-        if item_id in self.item_cf_model.matrix.item_to_idx:
+        if self.item_cf_model is not None and item_id in self.item_cf_model.matrix.item_to_idx:
             recs = self.item_cf_model.get_similar_items(item_id, n_neighbors=k)
             if len(recs) > 0:
                 return recs, "item_cf_similarity"

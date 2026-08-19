@@ -38,10 +38,12 @@ class ContentBasedRecommender:
         max_features: int = 10000,
         stop_words: str = "english",
         min_df: int = 2,
+        api_mode: bool = False,
     ):
         self.max_features = max_features
         self.stop_words = stop_words
         self.min_df = min_df
+        self.api_mode = api_mode
 
         self.vectorizer: Optional[TfidfVectorizer] = None
         self.X_tfidf: Optional[sp.csr_matrix] = None
@@ -85,7 +87,36 @@ class ContentBasedRecommender:
         # Handle rows where text is empty
         meta_clean["text_repr"] = meta_clean["text_repr"].fillna("Musical Instruments")
 
-        # 2. Vectorize text features using TF-IDF
+        # 2. Cache metadata dictionary
+        for _, row in meta_clean.iterrows():
+            self.item_metadata_map[row["parent_asin"]] = {
+                "title": row.get("title", ""),
+                "store": row.get("store", ""),
+                "main_category": row.get("main_category", ""),
+                "categories_flat": row.get("categories_flat", ""),
+                "price": row.get("price", np.nan),
+            }
+
+        # 3. Build category-popularity lookup from training interactions if available
+        if train_df is not None:
+            train_item_counts = train_df["parent_asin"].value_counts().to_dict()
+            self.global_popular_items = [item for item, _ in sorted(train_item_counts.items(), key=lambda x: x[1], reverse=True)]
+
+            # Group items by main_category
+            meta_with_counts = meta_clean.copy()
+            meta_with_counts["train_count"] = meta_with_counts["parent_asin"].map(train_item_counts).fillna(0)
+
+            for cat, group in meta_with_counts.groupby("main_category"):
+                sorted_cat_items = group.sort_values(by="train_count", ascending=False)["parent_asin"].tolist()
+                self.category_popular_items[str(cat)] = sorted_cat_items
+
+        if self.api_mode:
+            # Skip TF-IDF vectorization in API mode to avoid OOM on 512MB Render instances
+            print("  ✓ API mode: skipped TF-IDF matrix construction for ContentBasedRecommender")
+            self.is_fitted = True
+            return self
+
+        # 4. Vectorize text features using TF-IDF
         t_vec = time.time()
         effective_min_df = 1 if len(meta_clean) < 10 else self.min_df
         self.vectorizer = TfidfVectorizer(
@@ -98,32 +129,9 @@ class ContentBasedRecommender:
         self.X_tfidf = self.vectorizer.fit_transform(meta_clean["text_repr"]).tocsr()
         vec_elapsed = time.time() - t_vec
 
-        # 3. Create index mappings
+        # 5. Create index mappings
         self.item_to_idx = {asin: i for i, asin in enumerate(meta_clean["parent_asin"])}
         self.idx_to_item = {i: asin for i, asin in enumerate(meta_clean["parent_asin"])}
-
-        # 4. Cache metadata dictionary
-        for _, row in meta_clean.iterrows():
-            self.item_metadata_map[row["parent_asin"]] = {
-                "title": row.get("title", ""),
-                "store": row.get("store", ""),
-                "main_category": row.get("main_category", ""),
-                "categories_flat": row.get("categories_flat", ""),
-                "price": row.get("price", np.nan),
-            }
-
-        # 5. Build category-popularity lookup from training interactions if available
-        if train_df is not None:
-            train_item_counts = train_df["parent_asin"].value_counts().to_dict()
-            self.global_popular_items = [item for item, _ in sorted(train_item_counts.items(), key=lambda x: x[1], reverse=True)]
-
-            # Group items by main_category
-            meta_with_counts = meta_clean.copy()
-            meta_with_counts["train_count"] = meta_with_counts["parent_asin"].map(train_item_counts).fillna(0)
-
-            for cat, group in meta_with_counts.groupby("main_category"):
-                sorted_cat_items = group.sort_values(by="train_count", ascending=False)["parent_asin"].tolist()
-                self.category_popular_items[str(cat)] = sorted_cat_items
 
         self.is_fitted = True
         total_elapsed = time.time() - start_time
@@ -140,6 +148,26 @@ class ContentBasedRecommender:
         """
         if not self.is_fitted:
             raise RuntimeError("ContentBasedRecommender must be fitted.")
+
+        if self.api_mode or self.X_tfidf is None:
+            # Lightweight API fallback: return popular items from the same category
+            cat = self.item_metadata_map.get(item_id, {}).get("main_category")
+            similar = []
+            if cat and cat in self.category_popular_items:
+                for p_item in self.category_popular_items[cat]:
+                    if p_item != item_id:
+                        # Give a dummy score to mimic cosine similarity
+                        similar.append((p_item, 0.9))
+                    if len(similar) >= k:
+                        break
+            
+            if len(similar) < k:
+                for p_item in self.global_popular_items:
+                    if p_item != item_id and p_item not in [x[0] for x in similar]:
+                        similar.append((p_item, 0.5))
+                    if len(similar) >= k:
+                        break
+            return similar
 
         if item_id not in self.item_to_idx:
             return []
@@ -188,6 +216,38 @@ class ContentBasedRecommender:
             raise RuntimeError("ContentBasedRecommender must be fitted.")
 
         seen = set(user_history) if exclude_seen else set()
+
+        if self.api_mode or self.X_tfidf is None:
+            # Lightweight API fallback: recommend popular items from the user's most frequent categories
+            category_counts = {}
+            for item in user_history:
+                cat = self.item_metadata_map.get(item, {}).get("main_category")
+                if cat:
+                    category_counts[cat] = category_counts.get(cat, 0) + 1
+            
+            recommendations = []
+            if category_counts:
+                # Sort categories by frequency
+                sorted_cats = sorted(category_counts.keys(), key=lambda c: category_counts[c], reverse=True)
+                for cat in sorted_cats:
+                    if cat in self.category_popular_items:
+                        for p_item in self.category_popular_items[cat]:
+                            if p_item not in seen and p_item not in recommendations:
+                                recommendations.append(p_item)
+                            if len(recommendations) >= k:
+                                break
+                    if len(recommendations) >= k:
+                        break
+
+            # Backfill with global popularity
+            if len(recommendations) < k:
+                for p_item in self.global_popular_items:
+                    if p_item not in seen and p_item not in recommendations:
+                        recommendations.append(p_item)
+                    if len(recommendations) >= k:
+                        break
+            return recommendations
+
         valid_indices = [self.item_to_idx[item] for item in user_history if item in self.item_to_idx]
 
         if not valid_indices:

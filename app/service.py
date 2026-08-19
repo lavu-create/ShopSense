@@ -106,6 +106,10 @@ class RecommenderService:
                     return [None] * len(asin_list)
 
                 content_model = self.recommender.content_model
+                
+                if content_model.X_tfidf is None:
+                    return [None] * len(asin_list)
+
                 valid_indices = [content_model.item_to_idx[item] for item in hist if item in content_model.item_to_idx]
                 if not valid_indices:
                     return [None] * len(asin_list)
