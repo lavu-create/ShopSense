@@ -4,6 +4,50 @@ ShopSense is an end-to-end e-commerce recommendation system and inference API bu
 
 ---
 
+## 🚀 Live Demo / Deployment
+
+**Live API:** [https://shopsense-lcrd.onrender.com](https://shopsense-lcrd.onrender.com)
+
+**GitHub:** [https://github.com/lavu-create/ShopSense](https://github.com/lavu-create/ShopSense)
+
+### Currently Verified API Endpoints
+
+- **`GET /health`**
+  - Health check
+  - Returns HTTP 200 when the API is running.
+  - Request example:
+    ```bash
+    curl -X GET "https://shopsense-lcrd.onrender.com/health"
+    ```
+
+- **`POST /recommend`**
+  - Generates recommendations for a user.
+  - Verified in production with HTTP 200.
+  - Request example:
+    ```bash
+    curl -X POST "https://shopsense-lcrd.onrender.com/recommend" \
+         -H "Content-Type: application/json" \
+         -d '{
+           "user_id": "unknown_test_user",
+           "k": 5
+         }'
+    ```
+
+- **`POST /similar-items`**
+  - Returns similar products for a given ASIN.
+  - Verified in production with HTTP 200.
+  - Request example:
+    ```bash
+    curl -X POST "https://shopsense-lcrd.onrender.com/similar-items" \
+         -H "Content-Type: application/json" \
+         -d '{
+           "parent_asin": "B0BCK6L7S5",
+           "k": 5
+         }'
+    ```
+
+---
+
 ## 🏗️ System Architecture & Multi-Tier Routing
 
 ```mermaid
@@ -20,6 +64,29 @@ flowchart TD
 
     R1 & R2 & R3 & R4 & R5 --> Enrich[Metadata & Score Enrichment] --> Resp([FastAPI JSON Response])
 ```
+
+### Production API Mode (Lightweight Routing)
+
+*Important Architecture Detail:* The full project contains User-Based CF, Item-Based CF, Hybrid CF, Content-Based recommendation, and Popularity recommendation components. However, the production Render deployment runs in **API mode** because the Render instance has a 512 MB memory limit.
+
+In API mode, to prevent memory overflow and request timeouts:
+
+- User-CF, Item-CF, and Hybrid CF models are skipped during initialization.
+- Full TF-IDF matrix construction is skipped.
+- `ContentBasedRecommender` uses a lightweight metadata/category-based fallback.
+- Metadata is cached efficiently.
+- Category popularity is used for lightweight recommendation and similarity fallback.
+
+### Current Production Routing
+
+- **`/recommend`**
+  - Users with history use the lightweight content/category-based history route.
+  - Unknown/cold users use the popularity prior route.
+  - Production responses may have `"score": null` because expensive model scoring is disabled in API mode.
+
+- **`/similar-items`**
+  - Cold metadata items use the lightweight `cold_item_content_match` fallback.
+  - The fallback returns lightweight category-based similarity scores, not TF-IDF cosine similarities.
 
 ---
 
@@ -55,6 +122,17 @@ All hyperparameters were frozen strictly using train-only validation splits befo
 - **Cold Users (0 interactions):** Graceful degradation to Bayesian weighted popularity prior.
 - **Sparse Users (1–9 interactions):** Aggregated TF-IDF content profile ($\mathbf{u}_{\text{profile}} = \frac{1}{\sum r} \sum r_j \mathbf{x}_j$) scored via sparse cosine similarity across the full catalog.
 - **Cold Items (unseen in training):** Evaluated on the 224 test interactions across 41 unseen products — content-based metadata matching achieves non-zero discovery (Recall@10 = $1.90\%$, NDCG@10 = $0.0117$, 14.6% cold catalog reach) where pure CF structurally outputs zero.
+
+---
+
+## ☁️ Production Deployment Notes
+
+- **Backend:** FastAPI + Uvicorn
+- **Hosting:** Render
+- **Production mode:** Lightweight API mode
+- **Reason:** Render 512 MB memory constraint
+
+The optimization avoids loading the memory-heavy collaborative filtering and full TF-IDF models during API startup/request handling. Both `/recommend` and `/similar-items` have been verified successfully in production with HTTP 200.
 
 ---
 
