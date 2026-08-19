@@ -286,8 +286,6 @@ class HybridRecommender:
         results: Dict[str, List[str]] = {}
 
         # 1. Pre-compute vectorized Item-CF scores for all catalog users: (n_users, n_items)
-        all_item_scores = (self.item_model.matrix.R @ self.item_model.S_sparse.T).tocsr()
-
         known_users = [u for u in user_ids if u in self.user_model.matrix.user_to_idx]
         unknown_users = [u for u in user_ids if u not in self.user_model.matrix.user_to_idx]
 
@@ -332,17 +330,23 @@ class HybridRecommender:
                         raw_map = {self.user_model.matrix.idx_to_item[c]: float(u_cand_scores[c]) for c in c_idx}
                         user_norm = self._normalize_scores(raw_map)
 
-                # Item-CF scores
-                r_start = all_item_scores.indptr[u_idx]
-                r_end = all_item_scores.indptr[u_idx + 1]
-                i_cand_idx = all_item_scores.indices[r_start:r_end]
-                i_cand_sc = all_item_scores.data[r_start:r_end]
-                item_norm: Dict[str, float] = {}
+                # Item-CF scores — calculate only for the current user
+                u_vec = self.item_model.matrix.R[u_idx]
+                item_scores = (u_vec @ self.item_model.S_sparse.T).tocsr()
 
-                if len(i_cand_sc) > 0:
-                    i_raw_map = {self.item_model.matrix.idx_to_item[c]: float(s) for c, s in zip(i_cand_idx, i_cand_sc)}
-                    item_norm = self._normalize_scores(i_raw_map)
+                if item_scores.nnz > 0:
+                    i_cand_idx = item_scores.indices
+                    i_cand_sc = item_scores.data
 
+                    raw_item_map = {
+                        self.item_model.matrix.idx_to_item[c]: float(score)
+                        for c, score in zip(i_cand_idx, i_cand_sc)
+                        if score > 0.0
+                    }
+
+                    item_norm = self._normalize_scores(raw_item_map)
+                else:
+                    item_norm = {}
                 # Candidate pool
                 candidate_pool = (set(user_norm.keys()) | set(item_norm.keys()) | top_pop_candidates) - seen
                 if not candidate_pool:

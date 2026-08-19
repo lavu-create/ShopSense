@@ -120,40 +120,64 @@ class ItemBasedCF:
         norms[norms == 0] = 1e-10
         Item_norm = sp.diags(1.0 / norms) @ Item_vecs
 
-        # 5. Build sparse top-N item similarity matrix in memory-efficient blocks
+        # 5. Build sparse top-N item similarity matrix in small memory-efficient blocks
         rows, cols, data = [], [], []
-        batch_size = 1000
+        batch_size = 100
 
         for b_start in range(0, n_items, batch_size):
             b_end = min(b_start + batch_size, n_items)
-            batch_sim = (Item_norm[b_start:b_end] @ Item_norm.T).toarray()
 
-            for idx in range(b_end - b_start):
-                item_idx = b_start + idx
-                sims = batch_sim[idx]
-                sims[item_idx] = 0.0  # Zero self-similarity
+            # Keep similarity computation sparse
+            batch_sim = (Item_norm[b_start:b_end] @ Item_norm.T).tocsr()
 
-                pos_mask = sims > self.min_similarity
-                if not np.any(pos_mask):
+            for local_idx in range(b_end - b_start):
+                item_idx = b_start + local_idx
+
+                start = batch_sim.indptr[local_idx]
+                end = batch_sim.indptr[local_idx + 1]
+
+                neighbor_idx = batch_sim.indices[start:end]
+                neighbor_sims = batch_sim.data[start:end]
+
+                # Remove self-similarity
+                mask = neighbor_idx != item_idx
+                neighbor_idx = neighbor_idx[mask]
+                neighbor_sims = neighbor_sims[mask]
+
+                # Apply minimum similarity threshold
+                mask = neighbor_sims > self.min_similarity
+                neighbor_idx = neighbor_idx[mask]
+                neighbor_sims = neighbor_sims[mask]
+
+                if len(neighbor_idx) == 0:
                     continue
 
-                pos_idx = np.where(pos_mask)[0]
-                pos_s = sims[pos_idx]
+                # Keep only top-N neighbors
+                if len(neighbor_idx) > self.n_neighbors:
+                    top_idx = np.argpartition(
+                        neighbor_sims,
+                        -self.n_neighbors
+                    )[-self.n_neighbors:]
 
-                if len(pos_idx) > self.n_neighbors:
-                    top_loc = np.argpartition(pos_s, -self.n_neighbors)[-self.n_neighbors:]
-                    top_i = pos_idx[top_loc]
-                    top_sims = pos_s[top_loc]
-                else:
-                    top_i = pos_idx
-                    top_sims = pos_s
+                    neighbor_idx = neighbor_idx[top_idx]
+                    neighbor_sims = neighbor_sims[top_idx]
 
-                for neighbor_i, s_val in zip(top_i, top_sims):
+                for neighbor_i, similarity in zip(neighbor_idx, neighbor_sims):
                     rows.append(item_idx)
                     cols.append(neighbor_i)
-                    data.append(float(s_val))
+                    data.append(float(similarity))
+
+            # Explicitly release the current similarity block
+            del batch_sim
+
+            if b_start % 1000 == 0:
+                print(f"   Processed {b_end:,}/{n_items:,} items...")
 
         self.S_sparse = sp.csr_matrix((data, (rows, cols)), shape=(n_items, n_items))
+
+        # Release temporary construction lists
+        del rows, cols, data
+
         sim_elapsed = time.time() - t_sim_start
 
         self.is_fitted = True
