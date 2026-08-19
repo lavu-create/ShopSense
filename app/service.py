@@ -49,15 +49,20 @@ class RecommenderService:
         if not metadata_path.exists():
             raise FileNotFoundError(f"Metadata not found at: {metadata_path}")
 
+        import time
+        t0 = time.time()
+        print("[API] Loading train data & metadata...")
         train_df = pd.read_parquet(train_path)
         meta_df = pd.read_parquet(metadata_path)
+        print(f"[API] Data loaded in {time.time() - t0:.2f} seconds")
 
-        rec = ShopSenseRecommender(min_cf_interactions=min_cf_interactions, api_mode=True,)
+        rec = ShopSenseRecommender(min_cf_interactions=min_cf_interactions, api_mode=True)
         rec.fit(train_df=train_df, metadata_df=meta_df)
 
         self.recommender = rec
         self.metadata_map = rec.content_model.item_metadata_map
         self.is_initialized = True
+        print(f"[API] Initialization complete in {time.time() - t0:.2f} seconds")
 
     def _enrich_item(
         self,
@@ -95,6 +100,10 @@ class RecommenderService:
         Does not invent scores; queries the fitted model representations directly.
         """
         if not asin_list or self.recommender is None:
+            return [None] * len(asin_list)
+
+        if self.recommender.api_mode:
+            # Genuinely lightweight API: don't compute expensive scores on the fly.
             return [None] * len(asin_list)
 
         try:
@@ -235,6 +244,9 @@ class RecommenderService:
         Generates top-K recommendations for a user via multi-tier routing,
         enriched with product metadata and genuine model scores.
         """
+        import time
+        t0 = time.time()
+        
         self.ensure_initialized()
 
         asin_list, strategy = self.recommender.recommend(user_id=user_id, k=k)
@@ -248,6 +260,9 @@ class RecommenderService:
             )
             for idx, asin in enumerate(asin_list)
         ]
+        
+        t1 = time.time()
+        print(f"[API] recommend() completed in {t1 - t0:.4f} seconds (strategy: {strategy})")
         return strategy, recommendations
 
     def get_similar_items(

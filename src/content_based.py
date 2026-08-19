@@ -80,41 +80,54 @@ class ContentBasedRecommender:
         start_time = time.time()
         print(f"\n📄 Fitting ContentBasedRecommender on {len(metadata_df):,} metadata records...")
 
-        # 1. Clean & prepare metadata text
+        # 1. Clean metadata
         meta_clean = metadata_df.drop_duplicates(subset=["parent_asin"]).copy().reset_index(drop=True)
-        meta_clean["text_repr"] = meta_clean.apply(self._build_text_field, axis=1)
 
-        # Handle rows where text is empty
-        meta_clean["text_repr"] = meta_clean["text_repr"].fillna("Musical Instruments")
+        print("  [API] Building metadata dictionary...")
+        # 2. Fast cache metadata dictionary without iterrows
+        asins = meta_clean["parent_asin"].tolist()
+        titles = meta_clean["title"].tolist() if "title" in meta_clean else [""] * len(asins)
+        stores = meta_clean["store"].tolist() if "store" in meta_clean else [""] * len(asins)
+        main_cats = meta_clean["main_category"].tolist() if "main_category" in meta_clean else [""] * len(asins)
+        cats_flat = meta_clean["categories_flat"].tolist() if "categories_flat" in meta_clean else [""] * len(asins)
+        prices = meta_clean["price"].tolist() if "price" in meta_clean else [np.nan] * len(asins)
 
-        # 2. Cache metadata dictionary
-        for _, row in meta_clean.iterrows():
-            self.item_metadata_map[row["parent_asin"]] = {
-                "title": row.get("title", ""),
-                "store": row.get("store", ""),
-                "main_category": row.get("main_category", ""),
-                "categories_flat": row.get("categories_flat", ""),
-                "price": row.get("price", np.nan),
+        self.item_metadata_map = {
+            asin: {
+                "title": t if pd.notna(t) else "",
+                "store": s if pd.notna(s) else "",
+                "main_category": mc if pd.notna(mc) else "",
+                "categories_flat": cf if pd.notna(cf) else "",
+                "price": float(p) if pd.notna(p) else np.nan,
             }
+            for asin, t, s, mc, cf, p in zip(asins, titles, stores, main_cats, cats_flat, prices)
+        }
 
+        print("  [API] Building category popularity cache...")
         # 3. Build category-popularity lookup from training interactions if available
         if train_df is not None:
             train_item_counts = train_df["parent_asin"].value_counts().to_dict()
             self.global_popular_items = [item for item, _ in sorted(train_item_counts.items(), key=lambda x: x[1], reverse=True)]
 
-            # Group items by main_category
-            meta_with_counts = meta_clean.copy()
-            meta_with_counts["train_count"] = meta_with_counts["parent_asin"].map(train_item_counts).fillna(0)
+            # Group only items that appear in training to save massive groupby overhead
+            train_items = set(train_item_counts.keys())
+            train_meta = meta_clean[meta_clean["parent_asin"].isin(train_items)].copy()
+            train_meta["train_count"] = train_meta["parent_asin"].map(train_item_counts)
 
-            for cat, group in meta_with_counts.groupby("main_category"):
-                sorted_cat_items = group.sort_values(by="train_count", ascending=False)["parent_asin"].tolist()
-                self.category_popular_items[str(cat)] = sorted_cat_items
+            for cat, group in train_meta.groupby("main_category"):
+                if pd.notna(cat) and str(cat).strip():
+                    sorted_cat_items = group.sort_values(by="train_count", ascending=False)["parent_asin"].tolist()
+                    self.category_popular_items[str(cat)] = sorted_cat_items
 
         if self.api_mode:
-            # Skip TF-IDF vectorization in API mode to avoid OOM on 512MB Render instances
-            print("  ✓ API mode: skipped TF-IDF matrix construction for ContentBasedRecommender")
+            # Skip TF-IDF vectorization and text_repr in API mode to avoid OOM on 512MB Render instances
+            print("  ✓ API mode: skipped TF-IDF matrix and text_repr construction for ContentBasedRecommender")
             self.is_fitted = True
             return self
+
+        # 4. Prepare text representation for TF-IDF (Full mode only)
+        meta_clean["text_repr"] = meta_clean.apply(self._build_text_field, axis=1)
+        meta_clean["text_repr"] = meta_clean["text_repr"].fillna("Musical Instruments")
 
         # 4. Vectorize text features using TF-IDF
         t_vec = time.time()
