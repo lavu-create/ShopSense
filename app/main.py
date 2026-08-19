@@ -36,13 +36,12 @@ logger = logging.getLogger("shopsense_api")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Application lifespan context manager:
-    Loads datasets and fits the multi-tier recommender system once at server startup.
+    Starts the API without loading the heavy recommendation model.
+    The recommender initializes when the first recommendation request arrives.
     """
     logger.info("Initializing ShopSense Recommendation Engine...")
     service = get_service()
-    service.initialize()
-    logger.info("ShopSense Recommendation Engine ready for inference.")
+    logger.info("ShopSense API started. Recommendation engine will initialize on first request.")
     yield
     logger.info("ShopSense Recommendation API shutting down.")
 

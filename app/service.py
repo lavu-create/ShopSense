@@ -194,6 +194,11 @@ class RecommenderService:
 
         return [None] * len(asin_list)
 
+    def ensure_initialized(self) -> None:
+        """Lazily initialize the recommender when inference is first requested."""
+        if not self.is_initialized:
+            self.initialize()
+
     def recommend(
         self,
         user_id: str,
@@ -203,8 +208,7 @@ class RecommenderService:
         Generates top-K recommendations for a user via multi-tier routing,
         enriched with product metadata and genuine model scores.
         """
-        if not self.is_initialized or self.recommender is None:
-            raise RuntimeError("RecommenderService is not initialized.")
+        self.ensure_initialized()
 
         asin_list, strategy = self.recommender.recommend(user_id=user_id, k=k)
         scores_list = self._compute_scores_for_recommendations(user_id=user_id, strategy=strategy, asin_list=asin_list)
@@ -228,8 +232,7 @@ class RecommenderService:
         Retrieves similar items for target ASIN.
         Raises 404 if item does not exist in catalog metadata.
         """
-        if not self.is_initialized or self.recommender is None:
-            raise RuntimeError("RecommenderService is not initialized.")
+        self.ensure_initialized()
 
         # Verify whether item exists in CF or metadata catalog
         is_in_cf = (
