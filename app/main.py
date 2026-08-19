@@ -117,6 +117,27 @@ async def generic_exception_handler(request: Request, exc: Exception):
 # API Endpoints
 # ---------------------------------------------------------------------------
 @app.get(
+    "/",
+    summary="Root Information",
+    tags=["System"],
+)
+async def root() -> JSONResponse:
+    """Returns general information about the API and available endpoints."""
+    return JSONResponse(
+        content={
+            "service": "ShopSense Recommendation API",
+            "status": "running",
+            "version": "1.0.0",
+            "endpoints": [
+                "/health",
+                "/recommend",
+                "/similar-items"
+            ]
+        }
+    )
+
+
+@app.get(
     "/health",
     response_model=HealthResponse,
     summary="Health check",
