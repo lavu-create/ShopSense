@@ -7,6 +7,7 @@ ShopSense is an end-to-end e-commerce recommendation system and inference API bu
 ## 🚀 Live Demo / Deployment
 
 **Live API:** [https://shopsense-lcrd.onrender.com](https://shopsense-lcrd.onrender.com)
+**Interactive Docs (Swagger UI):** [https://shopsense-lcrd.onrender.com/docs](https://shopsense-lcrd.onrender.com/docs)
 
 ### Currently Verified API Endpoints
 
