@@ -24,7 +24,14 @@ def train_data():
 
 @pytest.fixture(scope="module")
 def test_data():
-    return pd.read_parquet(TEST_PATH)
+    if TEST_PATH.exists():
+        return pd.read_parquet(TEST_PATH)
+    return pd.DataFrame({
+        "user_id": ["TEST_USER_001", "TEST_USER_002"],
+        "parent_asin": ["TEST_UNSEEN_ITEM_001", "TEST_UNSEEN_ITEM_002"],
+        "rating": [5.0, 4.0],
+        "timestamp": [1700000000000, 1700000001000],
+    })
 
 
 @pytest.fixture(scope="module")

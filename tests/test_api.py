@@ -11,6 +11,7 @@ import pandas as pd
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.service import recommender_service
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TRAIN_PATH = PROJECT_ROOT / "data" / "processed" / "train.parquet"
@@ -19,9 +20,12 @@ METADATA_PATH = PROJECT_ROOT / "data" / "processed" / "metadata_clean.parquet"
 
 @pytest.fixture(scope="module")
 def client():
-    """Module-scoped test client managing FastAPI lifespan."""
+    """Module-scoped test client managing FastAPI lifespan with full CF enabled for integration testing."""
+    recommender_service.reset()
+    recommender_service.initialize(api_mode=False)
     with TestClient(app) as test_client:
         yield test_client
+    recommender_service.reset()
 
 
 @pytest.fixture(scope="module")
@@ -230,3 +234,36 @@ def test_cors_headers_present(client):
     )
     assert response.status_code == 200
     assert response.headers.get("access-control-allow-origin") in ["*", "http://localhost:3000"]
+
+
+def test_production_lightweight_mode_routing():
+    """
+    Verify production lightweight mode (SHOPSENSE_API_MODE=true, 512 MB constraint):
+    - Warm users route to content_based_sparse_history.
+    - Warm items route to cold_item_content_match.
+    - Scores are None to prevent expensive on-the-fly matrix computations.
+    """
+    recommender_service.reset()
+    recommender_service.initialize(api_mode=True)
+    with TestClient(app) as test_client:
+        train_df = pd.read_parquet(TRAIN_PATH)
+        vc = train_df["user_id"].value_counts()
+        warm_user = vc[vc >= 10].index[0]
+
+        # 1. Warm user recommendation in lightweight mode
+        resp = test_client.post("/recommend", json={"user_id": warm_user, "k": 5})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["strategy"] == "content_based_sparse_history"
+        assert len(data["recommendations"]) == 5
+        assert all(r["score"] is None for r in data["recommendations"])
+
+        # 2. Similar items in lightweight mode
+        resp_sim = test_client.post("/similar-items", json={"parent_asin": "0634003224", "k": 3})
+        assert resp_sim.status_code == 200
+        data_sim = resp_sim.json()
+        assert data_sim["strategy"] == "cold_item_content_match"
+        assert len(data_sim["similar_items"]) == 3
+
+    # Clean up and reset
+    recommender_service.reset()

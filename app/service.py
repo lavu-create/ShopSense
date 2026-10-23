@@ -5,6 +5,7 @@ Manages singleton recommender initialization, thread-safe inference routing,
 and metadata/score enrichment for API responses.
 """
 
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
@@ -37,9 +38,16 @@ class RecommenderService:
         train_path: Path = TRAIN_PATH,
         metadata_path: Path = METADATA_PATH,
         min_cf_interactions: int = 10,
+        api_mode: Optional[bool] = None,
     ) -> None:
         """
         Loads training interactions and clean metadata, then fits the unified system.
+
+        Parameters
+        ----------
+        api_mode : Optional[bool]
+            Whether to run in lightweight production mode. If None, reads from
+            SHOPSENSE_API_MODE environment variable (defaults to True for 512 MB hosting).
         """
         if self.is_initialized:
             return
@@ -56,13 +64,24 @@ class RecommenderService:
         meta_df = pd.read_parquet(metadata_path)
         print(f"[API] Data loaded in {time.time() - t0:.2f} seconds")
 
-        rec = ShopSenseRecommender(min_cf_interactions=min_cf_interactions, api_mode=True)
+        if api_mode is None:
+            api_mode_resolved = os.getenv("SHOPSENSE_API_MODE", "true").lower() in ("true", "1", "yes")
+        else:
+            api_mode_resolved = api_mode
+
+        rec = ShopSenseRecommender(min_cf_interactions=min_cf_interactions, api_mode=api_mode_resolved)
         rec.fit(train_df=train_df, metadata_df=meta_df)
 
         self.recommender = rec
         self.metadata_map = rec.content_model.item_metadata_map
         self.is_initialized = True
-        print(f"[API] Initialization complete in {time.time() - t0:.2f} seconds")
+        print(f"[API] Initialization complete in {time.time() - t0:.2f} seconds (api_mode={api_mode_resolved})")
+
+    def reset(self) -> None:
+        """Resets the singleton state for testing."""
+        self.recommender = None
+        self.metadata_map = {}
+        self.is_initialized = False
 
     def _enrich_item(
         self,
