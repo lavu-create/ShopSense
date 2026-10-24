@@ -52,6 +52,7 @@ class ContentBasedRecommender:
         self.item_metadata_map: Dict[str, Dict[str, Any]] = {}
         self.category_popular_items: Dict[str, List[str]] = {}
         self.global_popular_items: List[str] = []
+        self.catalog_db: Optional[Any] = None
         self.is_fitted: bool = False
 
     @staticmethod
@@ -70,14 +71,38 @@ class ContentBasedRecommender:
 
     def fit(
         self,
-        metadata_df: pd.DataFrame,
+        metadata_df: Optional[pd.DataFrame] = None,
         train_df: Optional[pd.DataFrame] = None,
+        catalog_db: Optional[Any] = None,
     ) -> "ContentBasedRecommender":
         """
         Fits the TF-IDF vectorizer and builds sparse content representations.
         Metadata is used independently of test ratings.
         """
         start_time = time.time()
+        self.catalog_db = catalog_db
+
+        if self.api_mode and (catalog_db is not None or metadata_df is None):
+            if train_df is not None:
+                train_item_counts = train_df["parent_asin"].value_counts().to_dict()
+                self.global_popular_items = [
+                    item for item, _ in sorted(train_item_counts.items(), key=lambda x: x[1], reverse=True)
+                ]
+                if catalog_db is not None:
+                    cat_map = catalog_db.get_categories(list(train_item_counts.keys()))
+                    cat_popular: Dict[str, List[str]] = {}
+                    for asin in self.global_popular_items:
+                        c = cat_map.get(asin)
+                        if c:
+                            cat_popular.setdefault(c, []).append(asin)
+                    self.category_popular_items = cat_popular
+            print("  ✓ API mode: using disk-backed SQLite catalog; skipped TF-IDF matrix & in-memory dictionary")
+            self.is_fitted = True
+            return self
+
+        if metadata_df is None:
+            raise ValueError("metadata_df must be provided when not running in catalog_db API mode.")
+
         print(f"\n📄 Fitting ContentBasedRecommender on {len(metadata_df):,} metadata records...")
 
         # 1. Clean metadata
@@ -164,7 +189,12 @@ class ContentBasedRecommender:
 
         if self.api_mode or self.X_tfidf is None:
             # Lightweight API fallback: return popular items from the same category
-            cat = self.item_metadata_map.get(item_id, {}).get("main_category")
+            cat = None
+            if self.catalog_db is not None:
+                cat = self.catalog_db.get_category(item_id)
+            elif self.item_metadata_map:
+                cat = self.item_metadata_map.get(item_id, {}).get("main_category")
+
             similar = []
             if cat and cat in self.category_popular_items:
                 for p_item in self.category_popular_items[cat]:
@@ -232,11 +262,18 @@ class ContentBasedRecommender:
 
         if self.api_mode or self.X_tfidf is None:
             # Lightweight API fallback: recommend popular items from the user's most frequent categories
-            category_counts = {}
-            for item in user_history:
-                cat = self.item_metadata_map.get(item, {}).get("main_category")
-                if cat:
-                    category_counts[cat] = category_counts.get(cat, 0) + 1
+            category_counts: Dict[str, int] = {}
+            if self.catalog_db is not None:
+                cats_map = self.catalog_db.get_categories(user_history)
+                for item in user_history:
+                    cat = cats_map.get(item)
+                    if cat:
+                        category_counts[cat] = category_counts.get(cat, 0) + 1
+            else:
+                for item in user_history:
+                    cat = self.item_metadata_map.get(item, {}).get("main_category")
+                    if cat:
+                        category_counts[cat] = category_counts.get(cat, 0) + 1
             
             recommendations = []
             if category_counts:

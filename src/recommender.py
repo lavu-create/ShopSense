@@ -85,7 +85,12 @@ class ShopSenseRecommender:
         self.user_train_ratings: Dict[str, List[float]] = {}
         self.is_fitted: bool = False
 
-    def fit(self, train_df: pd.DataFrame, metadata_df: pd.DataFrame) -> "ShopSenseRecommender":
+    def fit(
+        self,
+        train_df: pd.DataFrame,
+        metadata_df: Optional[pd.DataFrame] = None,
+        catalog_db: Optional[Any] = None,
+    ) -> "ShopSenseRecommender":
         """
         Fits all underlying models on train interactions and catalog metadata.
         """
@@ -113,9 +118,14 @@ class ShopSenseRecommender:
             self.popularity_model = self.hybrid_model.pop_model
 
         # 2. Fit Content-Based metadata engine
-        active_items = set(train_df["parent_asin"].unique()) | set(metadata_df["parent_asin"].unique())
-        active_meta = metadata_df[metadata_df["parent_asin"].isin(active_items)].copy()
-        self.content_model.fit(active_meta, train_df=train_df)
+        if self.api_mode and (catalog_db is not None or metadata_df is None):
+            self.content_model.fit(metadata_df=None, train_df=train_df, catalog_db=catalog_db)
+        else:
+            if metadata_df is None:
+                raise ValueError("metadata_df is required when not running with catalog_db.")
+            active_items = set(train_df["parent_asin"].unique()) | set(metadata_df["parent_asin"].unique())
+            active_meta = metadata_df[metadata_df["parent_asin"].isin(active_items)].copy()
+            self.content_model.fit(active_meta, train_df=train_df)
 
         # 3. Cache user interaction counts and historical items
         user_groups = train_df.groupby("user_id")

@@ -5,6 +5,7 @@ data/processed/
 *.jsonl
 *.parquet
 *.csv
+*.db
 
 # Deployment data — required by FastAPI
 !data/processed/
@@ -28,6 +29,10 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# === Temporary Backups ===
+reports/historical_backup/
+reports/reproduced_benchmark/
 
 # === Jupyter ===
 .ipynb_checkpoints/

@@ -7,30 +7,35 @@ and metadata/score enrichment for API responses.
 
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Union
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 from fastapi import HTTPException, status
 
 from src.recommender import ShopSenseRecommender
+from src.catalog_db import CatalogDB, DEFAULT_DB_PATH
 from app.schemas import ItemRecommendation
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
 TRAIN_PATH = DATA_DIR / "train.parquet"
 METADATA_PATH = DATA_DIR / "metadata_clean.parquet"
+CATALOG_DB_PATH = DATA_DIR / "catalog.db"
 
 
 class RecommenderService:
     """
     Singleton service wrapper around ShopSenseRecommender.
     Loads and fits the multi-tier recommender once at application startup.
+    In lightweight production mode, uses a disk-backed SQLite catalog to strictly
+    bound resident memory usage below 512 MB.
     """
 
     def __init__(self):
         self.recommender: Optional[ShopSenseRecommender] = None
-        self.metadata_map: Dict[str, Dict[str, Any]] = {}
+        self.catalog: Optional[CatalogDB] = None
+        self.metadata_map: Union[CatalogDB, Dict[str, Dict[str, Any]]] = {}
         self.is_initialized: bool = False
 
     def initialize(
@@ -54,32 +59,53 @@ class RecommenderService:
 
         if not train_path.exists():
             raise FileNotFoundError(f"Training data not found at: {train_path}")
-        if not metadata_path.exists():
-            raise FileNotFoundError(f"Metadata not found at: {metadata_path}")
 
         import time
+        import gc
         t0 = time.time()
-        print("[API] Loading train data & metadata...")
-        train_df = pd.read_parquet(train_path)
-        meta_df = pd.read_parquet(metadata_path)
-        print(f"[API] Data loaded in {time.time() - t0:.2f} seconds")
 
         if api_mode is None:
             api_mode_resolved = os.getenv("SHOPSENSE_API_MODE", "true").lower() in ("true", "1", "yes")
         else:
             api_mode_resolved = api_mode
 
-        rec = ShopSenseRecommender(min_cf_interactions=min_cf_interactions, api_mode=api_mode_resolved)
-        rec.fit(train_df=train_df, metadata_df=meta_df)
+        if api_mode_resolved:
+            print("[API] Initializing in Lightweight Production Mode (SQLite Catalog)...")
+            catalog = CatalogDB(db_path=CATALOG_DB_PATH)
+            train_df = pd.read_parquet(train_path)
 
-        self.recommender = rec
-        self.metadata_map = rec.content_model.item_metadata_map
-        self.is_initialized = True
-        print(f"[API] Initialization complete in {time.time() - t0:.2f} seconds (api_mode={api_mode_resolved})")
+            rec = ShopSenseRecommender(min_cf_interactions=min_cf_interactions, api_mode=True)
+            rec.fit(train_df=train_df, metadata_df=None, catalog_db=catalog)
+
+            self.recommender = rec
+            self.catalog = catalog
+            self.metadata_map = catalog
+            self.is_initialized = True
+
+            del train_df
+            gc.collect()
+            print(f"[API] Initialization complete in {time.time() - t0:.2f}s (mode=lightweight, SQLite-backed)")
+        else:
+            print("[API] Initializing in Full Offline Model Mode (In-Memory Parquet)...")
+            if not metadata_path.exists():
+                raise FileNotFoundError(f"Metadata not found at: {metadata_path}")
+
+            train_df = pd.read_parquet(train_path)
+            meta_df = pd.read_parquet(metadata_path)
+
+            rec = ShopSenseRecommender(min_cf_interactions=min_cf_interactions, api_mode=False)
+            rec.fit(train_df=train_df, metadata_df=meta_df)
+
+            self.recommender = rec
+            self.catalog = None
+            self.metadata_map = rec.content_model.item_metadata_map
+            self.is_initialized = True
+            print(f"[API] Initialization complete in {time.time() - t0:.2f}s (mode=full)")
 
     def reset(self) -> None:
         """Resets the singleton state for testing."""
         self.recommender = None
+        self.catalog = None
         self.metadata_map = {}
         self.is_initialized = False
 
@@ -88,9 +114,10 @@ class RecommenderService:
         asin: str,
         rank: int,
         score: Optional[float] = None,
+        meta_override: Optional[Dict[str, Any]] = None,
     ) -> ItemRecommendation:
         """Enriches an ASIN with catalog metadata fields and rounded numeric score."""
-        meta = self.metadata_map.get(asin, {})
+        meta = meta_override if meta_override is not None else self.metadata_map.get(asin, {})
         title = meta.get("title") or asin
         category = meta.get("main_category") or meta.get("categories_flat") or "Musical Instruments"
         
@@ -271,11 +298,14 @@ class RecommenderService:
         asin_list, strategy = self.recommender.recommend(user_id=user_id, k=k)
         scores_list = self._compute_scores_for_recommendations(user_id=user_id, strategy=strategy, asin_list=asin_list)
 
+        meta_batch = self.catalog.get_items(asin_list) if self.catalog is not None else {}
+
         recommendations = [
             self._enrich_item(
                 asin=asin,
                 rank=idx + 1,
                 score=scores_list[idx] if idx < len(scores_list) else None,
+                meta_override=meta_batch.get(asin),
             )
             for idx, asin in enumerate(asin_list)
         ]
@@ -316,13 +346,25 @@ class RecommenderService:
         if len(sim_tuples) == 0:
             strategy = "popularity_fallback"
             pop_items = self.recommender.popularity_model.recommend(user_id=None, k=k)
+            meta_batch = self.catalog.get_items(pop_items) if self.catalog is not None else {}
             similar_items = [
-                self._enrich_item(asin=asin, rank=idx + 1)
+                self._enrich_item(
+                    asin=asin,
+                    rank=idx + 1,
+                    meta_override=meta_batch.get(asin),
+                )
                 for idx, asin in enumerate(pop_items)
             ]
         else:
+            rec_asins = [item_asin for item_asin, _ in sim_tuples[:k]]
+            meta_batch = self.catalog.get_items(rec_asins) if self.catalog is not None else {}
             similar_items = [
-                self._enrich_item(asin=asin, rank=idx + 1, score=score)
+                self._enrich_item(
+                    asin=asin,
+                    rank=idx + 1,
+                    score=score,
+                    meta_override=meta_batch.get(asin),
+                )
                 for idx, (asin, score) in enumerate(sim_tuples[:k])
             ]
 

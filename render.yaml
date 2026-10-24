@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: shopsense-api
+    runtime: python
+    plan: free
+    buildCommand: bash build.sh
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: SHOPSENSE_API_MODE
+        value: "true"
+      - key: PYTHON_VERSION
+        value: 3.11.11
