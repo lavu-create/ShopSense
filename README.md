@@ -29,17 +29,22 @@ ShopSense implements dynamic fallback routing based on user interaction depth an
 
 ```mermaid
 flowchart TD
-    Req([Incoming Recommendation Request]) --> CheckUser{"User Historical Activity"}
-    CheckUser -->|>= 10 Interactions (Warm)| R1[Route 1: Weighted Hybrid CF]
-    CheckUser -->|1 to 9 Interactions (Sparse)| R2[Route 2: TF-IDF Content-Based Profile]
-    CheckUser -->|0 Interactions / Unknown User| R3[Route 3: Bayesian Popularity Prior]
+    Req(["Incoming Recommendation Request"]) --> CheckUser{"User Historical Activity"}
+    CheckUser -->|10+ Interactions - Warm| R1["Route 1: Weighted Hybrid CF"]
+    CheckUser -->|1 to 9 Interactions - Sparse| R2["Route 2: TF-IDF Content-Based Profile"]
+    CheckUser -->|0 Interactions - Unknown User| R3["Route 3: Bayesian Popularity Prior"]
     
-    ItemReq([Similar Items Request]) --> CheckItem{"Item Catalog Status"}
-    CheckItem -->|Known in CF Graph| R4[Route 4: Item-CF Cosine Similarity]
-    CheckItem -->|Cold Item (Metadata Only)| R5[Route 5: TF-IDF Metadata Matching]
-    CheckItem -->|Absent from Metadata| R6[HTTP 404 Shield]
+    ItemReq(["Similar Items Request"]) --> CheckItem{"Item Catalog Status"}
+    CheckItem -->|Known in CF Graph| R4["Route 4: Item-CF Cosine Similarity"]
+    CheckItem -->|Cold Item - Metadata Only| R5["Route 5: TF-IDF Metadata Matching"]
+    CheckItem -->|Absent from Metadata| R6["HTTP 404 Shield"]
 
-    R1 & R2 & R3 & R4 & R5 --> Enrich[Metadata & Price Enrichment] --> Resp([FastAPI JSON Response])
+    R1 --> Enrich["Metadata & Price Enrichment"]
+    R2 --> Enrich
+    R3 --> Enrich
+    R4 --> Enrich
+    R5 --> Enrich
+    Enrich --> Resp(["FastAPI JSON Response"])
 ```
 
 ---
@@ -62,7 +67,7 @@ flowchart TD
 - **Product Metadata (`metadata_clean.parquet`):** **213,593 unique products** (100% review ASIN match).
 
 ### 3. Iterative k-Core Filtering
-- **Thresholds (Configuration D):** Minimum user interactions $\ge 10$, minimum item interactions $\ge 5$.
+- **Thresholds (Configuration D):** Minimum user interactions ≥ 10, minimum item interactions ≥ 5.
 - **Pruning Convergence:** Converged in **10 iterations** to a dense interaction core:
   - **Interactions Retained:** **176,128** (5.90% of raw)
   - **Unique Users:** **10,678** (0.61% of raw)
@@ -74,7 +79,7 @@ flowchart TD
 - **Train Set (`train.parquet`):** **136,814 interactions** across **10,678 users** (100% coverage) and **11,005 products**.
 - **Test Set (`test.parquet`):** **39,314 interactions** across **10,678 users** (100% coverage) and **9,264 products**.
 - **Temporal Integrity Assertions:**
-  - Per-user assertion: $\min(\text{test\_timestamp}) \ge \max(\text{train\_timestamp})$.
+  - Per-user assertion: `min(test_timestamp) >= max(train_timestamp)`.
   - **Detected Temporal Violations:** **0** across all 10,678 users.
 - **Cold Items in Test Set:** 224 test interactions across 41 products were completely unseen in training.
 
@@ -89,12 +94,12 @@ All model hyperparameters were frozen on train-only validation splits before off
 | **Popularity Baseline** | `0.010067` (1.01%) | `0.029725` (2.97%) | `0.023195` | 0.17% | 19 | N/A |
 | **User-Based CF ($N=50$)** | `0.007417` (0.74%) | `0.021810` (2.18%) | `0.017322` | 79.46% | 8,745 | 1.1340 |
 | **Item-Based CF ($N=10$)** | `0.004776` (0.48%) | `0.014165` (1.42%) | `0.010517` | 88.30% | 9,717 | 1.0910 |
-| **Weighted Hybrid ($50/40/10$)** | **`0.010695`** (1.07%) | **`0.031613` (3.16%)** | **`0.024645`** | **27.01%** | **2,973** | **`1.0791`** |
+| **Weighted Hybrid (50/40/10)** | **`0.010695`** (1.07%) | **`0.031613` (3.16%)** | **`0.024645`** | **27.01%** | **2,973** | **`1.0791`** |
 
 ### Key Benchmark Takeaways
 
 1. **Weighted Hybrid Dominance (Reproduced 3.16% Recall@10):**
-   - Blending Popularity ($0.50$), User-CF ($0.40$), and Item-CF ($0.10$) achieved **3.1613% Recall@10** on the full test set and **3.1668%** on warm test pairs, outperforming every individual component model.
+   - Blending Popularity (0.50), User-CF (0.40), and Item-CF (0.10) achieved **3.1613% Recall@10** on the full test set and **3.1668%** on warm test pairs, outperforming every individual component model.
    - Intra-List Diversity (ILD) scored **0.6951**, actively recommending **2,973 unique products** with 27.01% catalog coverage (avoiding pure popularity collapse).
 2. **Catalog Discovery vs. Hit Concentration:**
    - Popularity concentrates on the top 19 blockbuster products.
@@ -115,7 +120,7 @@ The service supports two operating modes controlled via `SHOPSENSE_API_MODE`:
 | **Target Use Case** | Offline benchmarking, model training, grid search | Cloud deployment, low-latency API serving |
 | **Catalog Storage** | In-memory Pandas DataFrame (213,593 records) | **Disk-backed SQLite B-Tree database (`catalog.db`)** |
 | **User-CF & Item-CF** | Fits sparse user-user & item-item matrices | Skipped (routed to cached popularity / content priors) |
-| **TF-IDF Matrix** | Fits $213\text{K} \times 10\text{K}$ sparse matrix ($6.2\text{M}$ non-zeros) | Skipped (uses precomputed category popularity indices) |
+| **TF-IDF Matrix** | Fits 213K × 10K sparse matrix (6.2M non-zeros) | Skipped (uses precomputed category popularity indices) |
 | **Startup Latency** | ~19.35 seconds | **~1.24 seconds** |
 | **Python Tracemalloc Heap** | 330.8 MB allocated (**685.8 MB peak heap**) | **83.7 MB allocated (95.3 MB peak heap)** |
 | **OS Process RSS (Local macOS arm64)**| 1,510.3 MB steady (**1,630.3 MB peak RSS**) | **339.8 MB steady (340.7 MB peak RSS)** |
