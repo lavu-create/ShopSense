@@ -52,11 +52,33 @@ app = FastAPI(
     description="Multi-tier personalized recommendation engine and similar-product similarity matching API.",
     version="1.0.0",
     lifespan=lifespan,
+    # Pin ReDoc to the last stable 2.x UMD bundle.  FastAPI 0.115.6 defaults
+    # to redoc@next (now 3.0.0‑rc.4) which is an ES‑module; FastAPI's
+    # generated HTML loads it with a classic <script> tag (no type="module"),
+    # causing "Cannot use 'import.meta' outside a module" in browsers.
+    redoc_url=None,  # disable the broken default; we mount our own below
     responses={
         422: {"model": ErrorResponse, "description": "Validation Error"},
         500: {"model": ErrorResponse, "description": "Internal Server Error"},
     },
 )
+
+# ---------------------------------------------------------------------------
+# Custom /redoc route with a pinned ReDoc 2.x UMD bundle
+# ---------------------------------------------------------------------------
+from fastapi.openapi.docs import get_redoc_html  # noqa: E402
+
+REDOC_JS_URL = "https://cdn.jsdelivr.net/npm/redoc@2.1.5/bundles/redoc.standalone.js"
+
+
+@app.get("/redoc", include_in_schema=False)
+async def custom_redoc_html():
+    """Serves ReDoc with a pinned 2.x classic‑script‑compatible JS bundle."""
+    return get_redoc_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} — ReDoc",
+        redoc_js_url=REDOC_JS_URL,
+    )
 
 # ---------------------------------------------------------------------------
 # CORS Configuration

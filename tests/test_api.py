@@ -66,6 +66,39 @@ def test_health_endpoint(client):
     assert data["service"] == "ShopSense Recommendation API"
 
 
+def test_redoc_returns_html_with_pinned_bundle(client):
+    """Verify GET /redoc returns HTML referencing the pinned ReDoc 2.x UMD bundle."""
+    response = client.get("/redoc")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    body = response.text
+    # Must reference the pinned 2.1.5 UMD bundle, not @next / 3.x
+    assert "redoc@2.1.5" in body, f"Expected redoc@2.1.5 in HTML, got: {body[:500]}"
+    assert "redoc.standalone.js" in body
+    # Must NOT reference the broken @next bundle
+    assert "redoc@next" not in body
+    # Must load as a classic <script> (no type="module")
+    assert 'type="module"' not in body
+
+
+def test_docs_swagger_ui(client):
+    """Verify GET /docs returns Swagger UI HTML."""
+    response = client.get("/docs")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "swagger" in response.text.lower()
+
+
+def test_openapi_json(client):
+    """Verify GET /openapi.json returns a valid OpenAPI schema."""
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["info"]["title"] == "ShopSense Recommendation API"
+    assert "/recommend" in data["paths"]
+    assert "/similar-items" in data["paths"]
+
+
 # ---------------------------------------------------------------------------
 # 2. Recommendation Routing Endpoint Tests
 # ---------------------------------------------------------------------------
